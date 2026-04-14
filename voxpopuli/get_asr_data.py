@@ -24,6 +24,12 @@ SPLITS = ["train", "dev", "test"]
 
 def cut_session(info: Tuple[str, Dict[str, List[Tuple[float, float]]]]) -> None:
     in_path, out_path_to_timestamps = info
+    if not Path(in_path).exists():
+        # Source session not on disk (partial download — e.g. --max-years); skip silently.
+        return
+    # Skip sessions where every output segment already exists (idempotent re-runs).
+    if all(Path(p).exists() for p in out_path_to_timestamps):
+        return
     waveform, sr = torchaudio.load(in_path)
     duration = waveform.size(1)
     for out_path, timestamps in out_path_to_timestamps.items():
@@ -44,7 +50,7 @@ def get(args):
     tsv_path = out_root / Path(url).name
     if not tsv_path.exists():
         download_url(url, out_root.as_posix(), Path(url).name)
-    with gzip.open(tsv_path, "rt") as f:
+    with gzip.open(tsv_path, "rt", encoding="utf-8") as f:
         metadata = [x for x in csv.DictReader(f, delimiter="|")]
     # Get segment into list
     items = defaultdict(dict)
@@ -58,7 +64,10 @@ def get(args):
         in_path = in_root / year / f"{event_id}_original.ogg"
         cur_out_root = out_root / year
         cur_out_root.mkdir(exist_ok=True, parents=True)
-        out_path = cur_out_root / "{}-{}.ogg".format(event_id, r["id_"])
+        # Sanitize id_ for Windows: colons (e.g. in HH:MM:SS timestamps) are
+        # illegal in NTFS filenames; replace with hyphens.
+        safe_id = r["id_"].replace(":", "-")
+        out_path = cur_out_root / "{}-{}.ogg".format(event_id, safe_id)
         timestamps = [(t[0], t[1]) for t in literal_eval(r["vad"])]
         items[in_path.as_posix()][out_path.as_posix()] = timestamps
         manifest.append(
@@ -82,7 +91,7 @@ def get(args):
         "gender", "is_gold_transcript", "accent"
     ]
     for split in SPLITS:
-        with open(out_root / f"asr_{split}.tsv", "w") as f_o:
+        with open(out_root / f"asr_{split}.tsv", "w", encoding="utf-8") as f_o:
             f_o.write("\t".join(header) + "\n")
             for cols in manifest:
                 if cols[4] == split:
