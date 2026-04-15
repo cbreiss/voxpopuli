@@ -11,9 +11,9 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 from collections import defaultdict
 
-import torch
-import torchaudio
-from torchaudio.datasets.utils import download_url
+import numpy as np
+import soundfile as sf
+from torchaudio.datasets.utils import download_url  # patched by src._torchaudio_compat
 
 from voxpopuli import ASR_LANGUAGES, ASR_ACCENTED_LANGUAGES, DOWNLOAD_BASE_URL
 from voxpopuli.utils import multiprocess_run
@@ -30,15 +30,17 @@ def cut_session(info: Tuple[str, Dict[str, List[Tuple[float, float]]]]) -> None:
     # Skip sessions where every output segment already exists (idempotent re-runs).
     if all(Path(p).exists() for p in out_path_to_timestamps):
         return
-    waveform, sr = torchaudio.load(in_path)
-    duration = waveform.size(1)
+    # soundfile returns (samples, channels); torchaudio was (channels, samples).
+    # We work in (samples, channels) throughout and write with sf.write.
+    waveform, sr = sf.read(in_path, always_2d=True)
+    duration = waveform.shape[0]
     for out_path, timestamps in out_path_to_timestamps.items():
-        segment = torch.cat(
-            [waveform[:, int(s * sr): min(int(t * sr), duration)]
+        segment = np.concatenate(
+            [waveform[int(s * sr): min(int(t * sr), duration), :]
              for s, t in timestamps],
-            dim=1
+            axis=0,
         )
-        torchaudio.save(out_path, segment, sr)
+        sf.write(out_path, segment, sr)
 
 
 def get(args):
