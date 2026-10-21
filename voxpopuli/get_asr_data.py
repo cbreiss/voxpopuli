@@ -4,6 +4,7 @@
 # LICENSE file in the root directory of this source tree.
 import csv
 import argparse
+import os
 from tqdm import tqdm
 from ast import literal_eval
 import gzip
@@ -40,7 +41,14 @@ def cut_session(info: Tuple[str, Dict[str, List[Tuple[float, float]]]]) -> None:
              for s, t in timestamps],
             axis=0,
         )
-        sf.write(out_path, segment, sr)
+        # Write atomically: the skip-check above treats "every segment exists"
+        # as "session done", so a worker killed mid-write (e.g. OOM) must never
+        # leave a truncated file under the final name.  The ".part" name is not
+        # matched by *.ogg globs, and the format is given explicitly because it
+        # can no longer be inferred from the extension.
+        tmp_path = f"{out_path}.part"
+        sf.write(tmp_path, segment, sr, format="OGG")
+        os.replace(tmp_path, out_path)
 
 
 def get(args):
@@ -86,7 +94,12 @@ def get(args):
         )
     items = list(items.items())
     # Segment
-    multiprocess_run(items, cut_session)
+    # Pool size: args.n_workers if given (the caller's CPU allocation), else
+    # tqdm's default of min(32, cpu_count + 4), which counts the whole node.
+    # Each worker holds one whole decoded session (full-day sessions reach
+    # ~15 h ≈ 6.8 GB as float64), so an unbounded pool on a large node can
+    # exceed the job's memory limit and get a worker OOM-killed.
+    multiprocess_run(items, cut_session, n_workers=getattr(args, "n_workers", None))
     # Output per-split manifest
     header = [
         "id", "raw_text", "normalized_text", "speaker_id", "split",
