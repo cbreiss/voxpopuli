@@ -22,6 +22,20 @@ from voxpopuli.utils import multiprocess_run
 
 SPLITS = ["train", "dev", "test"]
 
+# Frames per call to the Ogg Vorbis encoder.  libsndfile 1.2.2 (bundled with
+# soundfile 0.14.0) segfaults on a single large Ogg Vorbis write: synthetic
+# noise crashes at 2**21 - 1 frames, and two real segments of
+# 20200310-0900-PLENARY (131 s and 229 s) crashed every full run on RCC in
+# 2026-10.  Writing the same data in blocks of this size succeeds.
+OGG_WRITE_BLOCK = 65536
+
+
+def write_ogg(path: str, data: np.ndarray, sr: int) -> None:
+    """Write (samples, channels) audio as Ogg Vorbis in OGG_WRITE_BLOCK blocks."""
+    with sf.SoundFile(path, "w", samplerate=sr, channels=data.shape[1], format="OGG") as f:
+        for i in range(0, data.shape[0], OGG_WRITE_BLOCK):
+            f.write(data[i:i + OGG_WRITE_BLOCK])
+
 
 def cut_session(info: Tuple[str, Dict[str, List[Tuple[float, float]]]]) -> None:
     in_path, out_path_to_timestamps = info
@@ -42,12 +56,12 @@ def cut_session(info: Tuple[str, Dict[str, List[Tuple[float, float]]]]) -> None:
             axis=0,
         )
         # Write atomically: the skip-check above treats "every segment exists"
-        # as "session done", so a worker killed mid-write (e.g. OOM) must never
-        # leave a truncated file under the final name.  The ".part" name is not
-        # matched by *.ogg globs, and the format is given explicitly because it
-        # can no longer be inferred from the extension.
+        # as "session done", so a worker killed mid-write must never leave a
+        # truncated file under the final name.  The ".part" name is not
+        # matched by *.ogg globs.  write_ogg feeds the encoder in blocks
+        # (see OGG_WRITE_BLOCK: one large write segfaults libsndfile 1.2.2).
         tmp_path = f"{out_path}.part"
-        sf.write(tmp_path, segment, sr, format="OGG")
+        write_ogg(tmp_path, segment, sr)
         os.replace(tmp_path, out_path)
 
 
